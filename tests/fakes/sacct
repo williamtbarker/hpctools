@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -eu
+
+[ -z "${HPC_FAKE_SACCT_STATE:-}" ] || printf '%s|\n' "$HPC_FAKE_SACCT_STATE"

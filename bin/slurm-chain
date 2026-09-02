@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=../lib/hpctools/common.sh
+source "$script_dir/../lib/hpctools/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: slurm-chain [--dependency afterok|afterany] [--submit] FILE [FILE ...]
+
+Plans a linear dependency chain by default. Pass --submit to call sbatch.
+Every script must pass slurm-lint before any job is submitted.
+EOF
+}
+
+submit="0"
+dependency="afterok"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --submit) submit="1"; shift ;;
+    --dependency)
+      [ "$#" -ge 2 ] || hpctools_die "--dependency requires a value" 2
+      dependency=$2
+      shift 2
+      ;;
+    --version) printf 'slurm-chain %s\n' "$HPCTOOLS_VERSION"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; break ;;
+    -*) hpctools_die "unknown option: $1" 2 ;;
+    *) break ;;
+  esac
+done
+
+case "$dependency" in afterok|afterany) ;; *) hpctools_die "dependency must be afterok or afterany" 2 ;; esac
+[ "$#" -gt 0 ] || hpctools_die "at least one batch script is required" 2
+
+for batch_script in "$@"; do
+  if ! lint_output=$("$script_dir/slurm-lint" "$batch_script" 2>&1); then
+    printf '%s\n' "$lint_output" >&2
+    hpctools_die "refusing chain because lint failed: $batch_script"
+  fi
+done
+
+if [ "$submit" = "0" ]; then
+  index=0
+  previous=""
+  for batch_script in "$@"; do
+    index=$((index + 1))
+    if [ -z "$previous" ]; then
+      printf 'PLAN\t%s\t%s\tdependency=none\n' "$index" "$batch_script"
+    else
+      printf 'PLAN\t%s\t%s\tdependency=%s:JOB_%s\n' "$index" "$batch_script" "$dependency" "$previous"
+    fi
+    previous=$index
+  done
+  printf 'DRY_RUN\tpass --submit to submit this chain\n'
+  exit 0
+fi
+
+hpctools_require_command sbatch
+index=0
+previous_job=""
+for batch_script in "$@"; do
+  index=$((index + 1))
+  if [ -z "$previous_job" ]; then
+    if ! submission=$(sbatch --parsable "$batch_script"); then
+      hpctools_die "sbatch failed for step $index: $batch_script"
+    fi
+  else
+    if ! submission=$(sbatch --parsable "--dependency=$dependency:$previous_job" "$batch_script"); then
+      hpctools_die "sbatch failed for step $index after jobs were already submitted"
+    fi
+  fi
+  job_id=${submission%%;*}
+  hpctools_is_uint "$job_id" || hpctools_die "could not parse sbatch job ID: $submission"
+  printf 'SUBMITTED\t%s\t%s\t%s\n' "$index" "$job_id" "$batch_script"
+  previous_job=$job_id
+done

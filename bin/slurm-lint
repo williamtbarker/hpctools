@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=../lib/hpctools/common.sh
+source "$script_dir/../lib/hpctools/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: slurm-lint [--strict] FILE [FILE ...]
+
+Checks common batch-script contracts without contacting a Slurm controller.
+Errors always fail. With --strict, warnings also fail.
+EOF
+}
+
+strict="0"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --strict) strict="1"; shift ;;
+    --version) printf 'slurm-lint %s\n' "$HPCTOOLS_VERSION"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; break ;;
+    -*) hpctools_die "unknown option: $1" 2 ;;
+    *) break ;;
+  esac
+done
+[ "$#" -gt 0 ] || hpctools_die "at least one batch script is required" 2
+
+total_errors=0
+total_warnings=0
+
+lint_error() {
+  printf 'ERROR\t%s:%s\t%s\t%s\n' "$lint_file" "$lint_line" "$1" "$2"
+  total_errors=$((total_errors + 1))
+}
+
+lint_warning() {
+  printf 'WARN\t%s:%s\t%s\t%s\n' "$lint_file" "$lint_line" "$1" "$2"
+  total_warnings=$((total_warnings + 1))
+}
+
+for lint_file in "$@"; do
+  [ -f "$lint_file" ] || {
+    lint_line=0
+    lint_error F001 "file does not exist or is not regular"
+    continue
+  }
+
+  lint_line=0
+  saw_shebang=0
+  saw_job_name=0
+  saw_time=0
+  saw_cpu=0
+  saw_memory=0
+  saw_output=0
+  saw_error_output=0
+  saw_strict=0
+  saw_umask=0
+  body_started=0
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    lint_line=$((lint_line + 1))
+    line=${line%$'\r'}
+    trimmed=$(printf '%s' "$line" | sed 's/^[[:space:]]*//')
+    if [ "$lint_line" -eq 1 ]; then
+      case "$trimmed" in
+        '#!'*bash*) saw_shebang=1 ;;
+        *) lint_error S001 "first line must be a Bash shebang" ;;
+      esac
+    fi
+
+    case "$trimmed" in
+      '#SBATCH '*|'#SBATCH	'*)
+        if [ "$body_started" -eq 1 ]; then
+          lint_error D001 "#SBATCH directive occurs after executable content"
+        fi
+        directive=${trimmed#\#SBATCH}
+        directive=$(printf '%s' "$directive" | sed 's/^[[:space:]]*//')
+        case "$directive" in
+          --job-name=*|--job-name[[:space:]]*|-J=*|-J[[:space:]]*|-J?*) saw_job_name=1 ;;
+          --time=*|--time[[:space:]]*|-t=*|-t[[:space:]]*|-t?*) saw_time=1 ;;
+          --cpus-per-task=*|--cpus-per-task[[:space:]]*|-c=*|-c[[:space:]]*|-c?*) saw_cpu=1 ;;
+          --mem=*|--mem[[:space:]]*|--mem-per-cpu=*|--mem-per-cpu[[:space:]]*) saw_memory=1 ;;
+          --output=*|--output[[:space:]]*|-o=*|-o[[:space:]]*|-o?*) saw_output=1 ;;
+          --error=*|--error[[:space:]]*|-e=*|-e[[:space:]]*|-e?*) saw_error_output=1 ;;
+        esac
+        ;;
+      ''|'#'*) ;;
+      *) body_started=1 ;;
+    esac
+
+    case "$trimmed" in
+      set\ *e*o\ pipefail*) saw_strict=1 ;;
+      umask\ 0077|umask\ 077|umask\ 0027|umask\ 027) saw_umask=1 ;;
+    esac
+    case "$trimmed" in
+      *'rm -rf '*|*'rm -fr '*) lint_warning R001 "recursive forced deletion requires manual review" ;;
+      *'scancel -u '*|*'scancel --user '*) lint_warning R002 "bulk user cancellation requires manual review" ;;
+      *'aws s3 sync '*' --delete'*) lint_warning R003 "remote synchronization uses --delete" ;;
+      *'find '*' -delete'*) lint_warning R004 "find -delete requires manual review" ;;
+    esac
+  done <"$lint_file"
+
+  lint_line=0
+  [ "$saw_shebang" -eq 1 ] || true
+  [ "$saw_job_name" -eq 1 ] || lint_error D101 "missing --job-name/-J directive"
+  [ "$saw_time" -eq 1 ] || lint_error D102 "missing --time/-t directive"
+  [ "$saw_cpu" -eq 1 ] || lint_error D103 "missing --cpus-per-task/-c directive"
+  [ "$saw_memory" -eq 1 ] || lint_error D104 "missing --mem or --mem-per-cpu directive"
+  [ "$saw_output" -eq 1 ] || lint_error D105 "missing --output/-o directive"
+  [ "$saw_error_output" -eq 1 ] || lint_warning D201 "missing explicit --error/-e directive"
+  [ "$saw_strict" -eq 1 ] || lint_warning B201 "missing strict mode such as set -Eeuo pipefail"
+  [ "$saw_umask" -eq 1 ] || lint_warning B202 "missing restrictive umask such as umask 0077"
+done
+
+printf 'SUMMARY\tfiles=%s\terrors=%s\twarnings=%s\n' "$#" "$total_errors" "$total_warnings"
+if [ "$total_errors" -gt 0 ]; then
+  exit 1
+fi
+if [ "$strict" = "1" ] && [ "$total_warnings" -gt 0 ]; then
+  exit 1
+fi

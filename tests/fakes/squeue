@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -eu
+
+job_id=""
+format=""
+user_query="0"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -j) job_id=$2; shift 2 ;;
+    -o) format=$2; shift 2 ;;
+    -u) user_query="1"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+if [ "$user_query" = "1" ] && [ -z "$job_id" ]; then
+  count=${HPC_FAKE_ACTIVE_JOBS:-0}
+  index=0
+  while [ "$index" -lt "$count" ]; do
+    printf 'fake-job-%s\n' "$index"
+    index=$((index + 1))
+  done
+  exit 0
+fi
+
+if [ -n "$job_id" ]; then
+  case "$format" in
+    *'|'*)
+      [ "${HPC_FAKE_JOB_PRESENT:-1}" = "1" ] || exit 0
+      printf '%s|%s|%s\n' "$job_id" "${HPC_FAKE_OWNER:-tester}" "${HPC_FAKE_STATE:-RUNNING}"
+      ;;
+    *)
+      if [ -n "${HPC_FAKE_STATE_FILE:-}" ] && [ -s "$HPC_FAKE_STATE_FILE" ]; then
+        state=$(sed -n '1p' "$HPC_FAKE_STATE_FILE")
+        sed '1d' "$HPC_FAKE_STATE_FILE" >"${HPC_FAKE_STATE_FILE}.next"
+        mv "${HPC_FAKE_STATE_FILE}.next" "$HPC_FAKE_STATE_FILE"
+        [ "$state" = "ABSENT" ] || printf '%s\n' "$state"
+      elif [ -n "${HPC_FAKE_STATE:-}" ]; then
+        [ "$HPC_FAKE_STATE" = "ABSENT" ] || printf '%s\n' "$HPC_FAKE_STATE"
+      fi
+      ;;
+  esac
+fi

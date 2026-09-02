@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -eu
+
+: "${HPC_FAKE_SBATCH_LOG:?HPC_FAKE_SBATCH_LOG is required}"
+: "${HPC_FAKE_SBATCH_COUNTER:?HPC_FAKE_SBATCH_COUNTER is required}"
+printf '%s\n' "$*" >>"$HPC_FAKE_SBATCH_LOG"
+counter=$(cat "$HPC_FAKE_SBATCH_COUNTER")
+counter=$((counter + 1))
+printf '%s\n' "$counter" >"$HPC_FAKE_SBATCH_COUNTER"
+printf '%s\n' "$counter"

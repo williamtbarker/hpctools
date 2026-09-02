@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=../lib/hpctools/common.sh
+source "$script_dir/../lib/hpctools/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: slurm-wait --job JOB_ID [--interval SECONDS] [--timeout SECONDS]
+                  [--unknown-limit COUNT]
+
+Waits until a Slurm job reaches a terminal state. A completed job exits 0;
+failed, cancelled, or timed-out jobs exit 1. Local timeout exits 124.
+EOF
+}
+
+job_id=""
+interval="15"
+timeout="0"
+unknown_limit="3"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --job) [ "$#" -ge 2 ] || hpctools_die "--job requires a value" 2; job_id=$2; shift 2 ;;
+    --interval) [ "$#" -ge 2 ] || hpctools_die "--interval requires a value" 2; interval=$2; shift 2 ;;
+    --timeout) [ "$#" -ge 2 ] || hpctools_die "--timeout requires a value" 2; timeout=$2; shift 2 ;;
+    --unknown-limit) [ "$#" -ge 2 ] || hpctools_die "--unknown-limit requires a value" 2; unknown_limit=$2; shift 2 ;;
+    --version) printf 'slurm-wait %s\n' "$HPCTOOLS_VERSION"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
+    *) hpctools_die "unknown option: $1" 2 ;;
+  esac
+done
+
+hpctools_is_job_id "$job_id" || hpctools_die "invalid or missing job ID" 2
+hpctools_is_uint "$interval" || hpctools_die "--interval must be a non-negative integer" 2
+hpctools_is_uint "$timeout" || hpctools_die "--timeout must be a non-negative integer" 2
+hpctools_is_positive_int "$unknown_limit" || hpctools_die "--unknown-limit must be positive" 2
+hpctools_require_command squeue
+hpctools_require_command sacct
+
+start_time=$(date +%s)
+previous_state=""
+unknown_count=0
+while :; do
+  state=$(squeue -h -j "$job_id" -o '%T' 2>/dev/null | awk 'NF {print $1; exit}')
+  if [ -z "$state" ]; then
+    state=$(sacct -n -X -j "$job_id" --format=State --parsable2 2>/dev/null | awk -F'|' 'NF && $1 != "" {print $1; exit}')
+  fi
+  state=$(hpctools_normalize_state "${state:-UNKNOWN}")
+
+  if [ "$state" != "$previous_state" ]; then
+    printf 'JOB\t%s\tSTATE\t%s\n' "$job_id" "$state"
+    previous_state=$state
+  fi
+
+  if hpctools_is_terminal_state "$state"; then
+    [ "$state" = "COMPLETED" ] && exit 0
+    exit 1
+  fi
+
+  if [ "$state" = "UNKNOWN" ]; then
+    unknown_count=$((unknown_count + 1))
+    if [ "$unknown_count" -ge "$unknown_limit" ]; then
+      hpctools_die "job remained unknown for $unknown_count checks"
+    fi
+  else
+    unknown_count=0
+  fi
+
+  if [ "$timeout" -gt 0 ]; then
+    current_time=$(date +%s)
+    if [ $((current_time - start_time)) -ge "$timeout" ]; then
+      hpctools_error "local timeout while waiting for job $job_id"
+      exit 124
+    fi
+  fi
+  sleep "$interval"
+done

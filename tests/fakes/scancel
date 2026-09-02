@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -eu
+
+: "${HPC_FAKE_SCANCEL_LOG:?HPC_FAKE_SCANCEL_LOG is required}"
+printf '%s\n' "$*" >>"$HPC_FAKE_SCANCEL_LOG"

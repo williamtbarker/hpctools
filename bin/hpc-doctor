@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=../lib/hpctools/common.sh
+source "$script_dir/../lib/hpctools/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: hpc-doctor [--path DIRECTORY] [--require-slurm]
+
+Prints a read-only environment and scheduler diagnostic report. Missing Slurm
+commands are warnings unless --require-slurm is supplied.
+EOF
+}
+
+check_path="${PWD}"
+require_slurm="0"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --path) [ "$#" -ge 2 ] || hpctools_die "--path requires a value" 2; check_path=$2; shift 2 ;;
+    --require-slurm) require_slurm="1"; shift ;;
+    --version) printf 'hpc-doctor %s\n' "$HPCTOOLS_VERSION"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
+    *) hpctools_die "unknown option: $1" 2 ;;
+  esac
+done
+
+[ -d "$check_path" ] || hpctools_die "directory does not exist: $check_path" 2
+current_user=${HPCTOOLS_USER:-$(id -un)}
+printf 'HPCTOOLS_VERSION\t%s\n' "$HPCTOOLS_VERSION"
+printf 'USER\t%s\n' "$current_user"
+printf 'HOST\t%s\n' "$(hostname)"
+printf 'BASH\t%s\n' "${BASH_VERSION}"
+
+missing=0
+for command_name in sbatch squeue sacct scancel sinfo; do
+  if command_path=$(command -v "$command_name" 2>/dev/null); then
+    printf 'COMMAND\t%s\t%s\n' "$command_name" "$command_path"
+  else
+    printf 'MISSING\t%s\n' "$command_name"
+    missing=$((missing + 1))
+  fi
+done
+
+readable=no
+writable=no
+[ -r "$check_path" ] && readable=yes
+[ -w "$check_path" ] && writable=yes
+filesystem="unknown"
+if stat -f -c '%T' "$check_path" >/dev/null 2>&1; then
+  filesystem=$(stat -f -c '%T' "$check_path")
+elif stat -f '%T' "$check_path" >/dev/null 2>&1; then
+  filesystem=$(stat -f '%T' "$check_path")
+fi
+printf 'PATH\t%s\tfilesystem=%s\treadable=%s\twritable=%s\n' "$check_path" "$filesystem" "$readable" "$writable"
+
+if hpctools_has_command sinfo; then
+  printf 'SCHEDULER_BEGIN\n'
+  if ! sinfo -h -o '%P|%a|%l|%D|%t' 2>&1; then
+    printf 'SCHEDULER_ERROR\tsinfo query failed\n'
+  fi
+  printf 'SCHEDULER_END\n'
+fi
+if hpctools_has_command squeue; then
+  if queue_output=$(squeue -h -u "$current_user" 2>/dev/null); then
+    queue_count=$(printf '%s\n' "$queue_output" | awk 'NF {count++} END {print count + 0}')
+    printf 'ACTIVE_JOBS\t%s\n' "$queue_count"
+  else
+    printf 'SQUEUE_ERROR\tqueue query failed\n'
+  fi
+fi
+
+if [ "$require_slurm" = "1" ] && [ "$missing" -gt 0 ]; then
+  hpctools_die "$missing required Slurm commands are missing"
+fi
+if [ "$missing" -gt 0 ]; then
+  printf 'STATUS\tlimited\n'
+else
+  printf 'STATUS\tready\n'
+fi

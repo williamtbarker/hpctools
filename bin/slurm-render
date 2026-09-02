@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=../lib/hpctools/common.sh
+source "$script_dir/../lib/hpctools/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  slurm-render --output FILE --job-name NAME --time TIME --mem SIZE [options] -- COMMAND [ARG ...]
+
+Options:
+  --cpus N          CPUs per task (default: 1)
+  --partition NAME  Slurm partition
+  --stdout PATH     Standard-output pattern (default: slurm-%j.out)
+  --stderr PATH     Standard-error pattern (default: slurm-%j.err)
+  --array SPEC      Array specification such as 1-20%4
+  --force           Replace an existing regular output file
+  -h, --help        Show this help
+  --version         Show the hpctools version
+EOF
+}
+
+output=""
+job_name=""
+time_limit=""
+memory=""
+cpus="1"
+partition=""
+stdout_path="slurm-%j.out"
+stderr_path="slurm-%j.err"
+array_spec=""
+force="0"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output) [ "$#" -ge 2 ] || hpctools_die "--output requires a value" 2; output=$2; shift 2 ;;
+    --job-name) [ "$#" -ge 2 ] || hpctools_die "--job-name requires a value" 2; job_name=$2; shift 2 ;;
+    --time) [ "$#" -ge 2 ] || hpctools_die "--time requires a value" 2; time_limit=$2; shift 2 ;;
+    --mem) [ "$#" -ge 2 ] || hpctools_die "--mem requires a value" 2; memory=$2; shift 2 ;;
+    --cpus) [ "$#" -ge 2 ] || hpctools_die "--cpus requires a value" 2; cpus=$2; shift 2 ;;
+    --partition) [ "$#" -ge 2 ] || hpctools_die "--partition requires a value" 2; partition=$2; shift 2 ;;
+    --stdout) [ "$#" -ge 2 ] || hpctools_die "--stdout requires a value" 2; stdout_path=$2; shift 2 ;;
+    --stderr) [ "$#" -ge 2 ] || hpctools_die "--stderr requires a value" 2; stderr_path=$2; shift 2 ;;
+    --array) [ "$#" -ge 2 ] || hpctools_die "--array requires a value" 2; array_spec=$2; shift 2 ;;
+    --force) force="1"; shift ;;
+    --version) printf 'slurm-render %s\n' "$HPCTOOLS_VERSION"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; break ;;
+    *) hpctools_die "unknown option: $1" 2 ;;
+  esac
+done
+
+[ -n "$output" ] || hpctools_die "--output is required" 2
+[ -n "$job_name" ] || hpctools_die "--job-name is required" 2
+[ -n "$time_limit" ] || hpctools_die "--time is required" 2
+[ -n "$memory" ] || hpctools_die "--mem is required" 2
+[ "$#" -gt 0 ] || hpctools_die "a command is required after --" 2
+
+case "$job_name" in *[!A-Za-z0-9._-]*|'') hpctools_die "invalid job name: $job_name" 2 ;; esac
+case "$partition" in *[!A-Za-z0-9._-]*) hpctools_die "invalid partition: $partition" 2 ;; esac
+case "$stdout_path" in
+  ''|*[!A-Za-z0-9_./%+-]*) hpctools_die "invalid --stdout path pattern: $stdout_path" 2 ;;
+esac
+case "$stderr_path" in
+  ''|*[!A-Za-z0-9_./%+-]*) hpctools_die "invalid --stderr path pattern: $stderr_path" 2 ;;
+esac
+hpctools_is_positive_int "$cpus" || hpctools_die "--cpus must be a positive integer" 2
+memory_number=$memory
+case "$memory" in
+  *K|*M|*G|*T) memory_number=${memory%?} ;;
+  *[!0-9]*) hpctools_die "--mem must be a positive integer with optional K, M, G, or T suffix" 2 ;;
+esac
+hpctools_is_positive_int "$memory_number" \
+  || hpctools_die "--mem must be a positive integer with optional K, M, G, or T suffix" 2
+case "$time_limit" in *[!0-9:-]*|'') hpctools_die "invalid --time value: $time_limit" 2 ;; esac
+time_clock=$time_limit
+time_has_days=0
+case "$time_limit" in
+  *-*)
+    time_has_days=1
+    time_days=${time_limit%%-*}
+    time_clock=${time_limit#*-}
+    hpctools_is_uint "$time_days" || hpctools_die "invalid --time value: $time_limit" 2
+    ;;
+esac
+case "$time_clock" in
+  *:*:*) ;;
+  *) hpctools_die "--time must use HH:MM:SS or D-HH:MM:SS" 2 ;;
+esac
+time_hours=${time_clock%%:*}
+time_tail=${time_clock#*:}
+time_minutes=${time_tail%%:*}
+time_seconds=${time_tail#*:}
+case "$time_seconds" in *:*) hpctools_die "--time must contain exactly three fields" 2 ;; esac
+if ! hpctools_is_uint "$time_hours" \
+  || ! hpctools_is_uint "$time_minutes" \
+  || ! hpctools_is_uint "$time_seconds"; then
+  hpctools_die "invalid --time value: $time_limit" 2
+fi
+[ "$time_minutes" -lt 60 ] && [ "$time_seconds" -lt 60 ] \
+  || hpctools_die "minutes and seconds must be below 60" 2
+if [ "$time_has_days" -eq 1 ] && [ "$time_hours" -ge 24 ]; then
+  hpctools_die "hours must be below 24 when --time includes days" 2
+fi
+if [ -n "$array_spec" ] && [[ ! "$array_spec" =~ ^[0-9,%-]+$ ]]; then
+  hpctools_die "invalid --array value: $array_spec" 2
+fi
+
+if [ -e "$output" ] || [ -L "$output" ]; then
+  [ "$force" = "1" ] || hpctools_die "output already exists (use --force): $output" 1
+  [ ! -d "$output" ] || hpctools_die "output is a directory: $output" 1
+fi
+output_parent=$(dirname -- "$output")
+[ -d "$output_parent" ] || hpctools_die "output directory does not exist: $output_parent" 1
+
+umask 077
+temporary=$(mktemp "${output}.tmp.XXXXXX") || hpctools_die "could not create temporary file" 1
+cleanup() {
+  [ ! -e "$temporary" ] || rm -f -- "$temporary"
+}
+trap cleanup EXIT HUP INT TERM
+
+{
+  printf '#!/usr/bin/env bash\n'
+  printf '#SBATCH --job-name=%s\n' "$job_name"
+  [ -z "$partition" ] || printf '#SBATCH --partition=%s\n' "$partition"
+  printf '#SBATCH --cpus-per-task=%s\n' "$cpus"
+  printf '#SBATCH --mem=%s\n' "$memory"
+  printf '#SBATCH --time=%s\n' "$time_limit"
+  printf '#SBATCH --output=%s\n' "$stdout_path"
+  printf '#SBATCH --error=%s\n' "$stderr_path"
+  [ -z "$array_spec" ] || printf '#SBATCH --array=%s\n' "$array_spec"
+  printf '\nset -Eeuo pipefail\numask 0077\n\n'
+  printf 'exec'
+  for argument in "$@"; do
+    printf ' %q' "$argument"
+  done
+  printf '\n'
+} >"$temporary"
+
+chmod 0755 "$temporary"
+mv -f -- "$temporary" "$output"
+trap - EXIT HUP INT TERM
+printf 'WROTE\t%s\n' "$output"

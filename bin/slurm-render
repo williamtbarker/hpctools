@@ -99,8 +99,9 @@ if ! hpctools_is_uint "$time_hours" \
   || ! hpctools_is_uint "$time_seconds"; then
   hpctools_die "invalid --time value: $time_limit" 2
 fi
-[ "$time_minutes" -lt 60 ] && [ "$time_seconds" -lt 60 ] \
-  || hpctools_die "minutes and seconds must be below 60" 2
+if [ "$time_minutes" -ge 60 ] || [ "$time_seconds" -ge 60 ]; then
+  hpctools_die "minutes and seconds must be below 60" 2
+fi
 if [ "$time_has_days" -eq 1 ] && [ "$time_hours" -ge 24 ]; then
   hpctools_die "hours must be below 24 when --time includes days" 2
 fi

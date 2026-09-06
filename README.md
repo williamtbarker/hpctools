@@ -143,13 +143,6 @@ both Ubuntu and macOS.
 Mocked tests establish local program behavior; they are not evidence that a particular cluster's
 partitions, accounting configuration, or policy will accept a job.
 
-## Project provenance
-
-The recurring operational patterns were recovered from several years of HPC and Slurm work in a
-private technical-chat archive. The public implementation was reconstructed as a generic toolkit:
-employer-specific hosts, account identifiers, storage locations, credentials, scientific workflow
-details, and destructive cleanup recipes were deliberately excluded.
-
 ## License
 
 MIT. See [LICENSE](LICENSE).

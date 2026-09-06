@@ -1,5 +1,8 @@
 # hpctools
 
+[![License](https://img.shields.io/github/license/williamtbarker/hpctools)](https://github.com/williamtbarker/hpctools/blob/main/LICENSE)
+[![Release](https://img.shields.io/github/v/release/williamtbarker/hpctools?display_name=tag&sort=semver)](https://github.com/williamtbarker/hpctools/releases)
+
 [![CI](https://github.com/williamtbarker/hpctools/actions/workflows/ci.yml/badge.svg)](https://github.com/williamtbarker/hpctools/actions/workflows/ci.yml)
 [![ShellCheck](https://img.shields.io/badge/ShellCheck-clean-brightgreen.svg)](https://www.shellcheck.net/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
